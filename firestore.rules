@@ -1,0 +1,80 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+    function googleOwner(userId) {
+      return signedOwner(userId)
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+    function safeSkills(s) {
+      return s is list && s.size() == 5
+        && s[0] is int && s[0] >= 0 && s[0] <= 5
+        && s[1] is int && s[1] >= 0 && s[1] <= 5
+        && s[2] is int && s[2] >= 0 && s[2] <= 5
+        && s[3] is int && s[3] >= 0 && s[3] <= 5
+        && s[4] is int && s[4] >= 0 && s[4] <= 5;
+    }
+    function validProgress() {
+      let d = request.resource.data;
+      return d.keys().hasAll(['skills','coins','best','selected','totalRuns','updatedAt'])
+        && d.keys().hasOnly(['skills','coins','best','selected','totalRuns','updatedAt'])
+        && safeSkills(d.skills)
+        && d.coins is int && d.coins >= 0 && d.coins <= 100000000
+        && d.best is int && d.best >= 0 && d.best <= 5000
+        && d.selected is int && d.selected >= 0 && d.selected <= 2
+        && d.totalRuns is int && d.totalRuns >= 0 && d.totalRuns <= 1000000
+        && d.updatedAt == request.time;
+    }
+    function validRanking(userId) {
+      let d = request.resource.data;
+      return d.keys().hasAll([
+        'uid','displayName','character','wave','stage','kills',
+        'level','seconds','score','updatedAt'
+      ]) && d.keys().hasOnly([
+        'uid','displayName','character','wave','stage','kills',
+        'level','seconds','score','updatedAt'
+      ])
+      && d.uid == userId
+      && d.displayName is string && d.displayName.size() > 0 && d.displayName.size() <= 18
+      && d.character in ['吉伊卡哇','小八貓','兔兔']
+      && d.wave is int && d.wave >= 1 && d.wave <= 5000
+      && d.stage is string && d.stage.size() >= 3 && d.stage.size() <= 12
+      && d.kills is int && d.kills >= 0 && d.kills <= 999999
+      && d.level is int && d.level >= 1 && d.level <= 9999
+      && d.seconds is int && d.seconds >= 0 && d.seconds <= 9999999
+      && d.seconds >= (d.wave - 1) * 20
+      && d.score is int && d.score == d.wave * 1000000 + d.kills
+      && d.updatedAt == request.time;
+    }
+    // Only the player can access their own permanent skills and coins.
+    match /userProgress/{userId} {
+      allow get: if signedOwner(userId);
+      allow list: if false;
+      allow create, update: if signedOwner(userId) && validProgress();
+      allow delete: if false;
+    }
+    // Public rankings are readable by everyone, but only a matching
+    // Google-authenticated UID can submit that account's score.
+    match /leaderboard/{userId} {
+      allow read: if true;
+      allow create: if googleOwner(userId) && validRanking(userId);
+      allow update: if googleOwner(userId)
+        && validRanking(userId)
+        && request.resource.data.score >= resource.data.score
+        && request.resource.data.uid == resource.data.uid;
+      allow delete: if false;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+/*
+ SECURITY NOTE:
+ Firestore Rules validate identity and shape but CANNOT prove a web game
+ was genuinely played. A determined user can forge a high score through
+ their own browser. For a prize-bearing/competitive leaderboard, replace
+ client writes with verified server-authoritative runs (Cloud Functions).
+*/
